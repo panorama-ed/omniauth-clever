@@ -28,7 +28,6 @@ module OmniAuth
 
       def callback_phase
         error = request.params["error_reason"] || request.params["error"]
-        puts "error: #{error}"
         stored_state = session.delete("omniauth.state")
         if error
           fail!(error, CallbackError.new(request.params["error"], request.params["error_description"] || request.params["error_reason"], request.params["error_uri"]))

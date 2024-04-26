@@ -5,12 +5,43 @@ require "rack/test"
 RSpec.describe OmniAuth::Strategies::Clever do
   include Rack::Test::Methods
 
-  subject(:strategy) do
-    described_class.new(app, :clever)
+  let(:app) do
+    Rack::Builder.new do
+      use OmniAuth::Test::PhonySession
+      use OmniAuth::Builder do
+        provider :clever, "TEST_ID", "TEST_SECRET"
+      end
+      run lambda { |env|
+        [
+          404,
+          { "Content-Type" => "text/plain" },
+          [env.key?("omniauth.auth").to_s]
+        ]
+      }
+    end
   end
 
-  subject do
-    OmniAuth::Strategies::Clever.new({})
+  subject(:strategy) do
+    described_class.new(app, "TEST_ID", "TEST_SECRET").tap do |strategy|
+      strategy.options.client_options.site = 'https://api.clever.com'
+    end
+  end
+
+  before(:each) do
+    OmniAuth.config.test_mode = true
+    env = { 'rack.session' => {} }
+    request = double("Request",
+                     params: {},
+                     env: env,
+                     scheme: 'http',
+                     url: 'http://example.org',
+                     path: '')
+    allow(strategy).to receive(:request).and_return(request)
+    strategy.call!(env)
+  end
+
+  after(:each) do
+    OmniAuth.config.test_mode = false
   end
 
   context 'client options' do
@@ -45,60 +76,6 @@ RSpec.describe OmniAuth::Strategies::Clever do
       encoded_credentials = Base64.strict_encode64("#{subject.options.client_id}:#{subject.options.client_secret}")
       token_params = subject.token_params
       expect(token_params[:headers]['Authorization']).to eq("Basic #{encoded_credentials}")
-    end
-  end
-
-  describe '#callback_phase' do
-    let(:request) { double('Request', params: {}, env: {}) }
-    let(:app) do
-      lambda do |env|
-        [200, {}, ["Hello."]]
-      end
-    end
-
-    before do
-      allow(subject).to receive(:request).and_return(request)
-      allow(request).to receive(:scheme).and_return("http")
-      allow(request).to receive(:url).and_return("http://localhost")
-      allow(strategy).to receive(:full_host).and_return("http://example.com")
-      allow(strategy).to receive(:script_name).and_return("")
-      allow(strategy).to receive(:callback_path).and_return("/auth/rainbow/callback")
-      subject.instance_variable_set("@env", {"rack.session" => {}})
-    end
-
-    context 'when error is present in request params' do
-      # before do
-      #   request.params["error_reason"] = "some_error"
-      # end
-      let(:authorize_params) { { error_reason: "some error" } }
-      # let(:request) { super().merge( params: { error_reason: "some error" }) }
-
-      it 'fails with error' do
-        expect { subject.callback_phase }.to raise_error(OmniAuth::Strategies::OAuth2::CallbackError)
-      end
-    end
-
-    context 'when state is not valid' do
-      before do
-        request.params["state"] = "invalid_state"
-        subject.session["omniauth.state"] = "valid_state"
-        # subject.options.provider_ignores_state = false
-      end
-
-      # it 'fails with csrf_detected' do
-      #   expect { subject.callback_phase }.to raise_error(OmniAuth::Strategies::OAuth2::CallbackError, "CSRF detected")
-      # end
-    end
-
-    context 'when state is valid' do
-      before do
-        request.params["state"] = "valid_state"
-        subject.session["omniauth.state"] = "valid_state"
-      end
-
-      it 'does not raise an error' do
-        expect { subject.callback_phase }.not_to raise_error
-      end
     end
   end
 
@@ -185,6 +162,25 @@ RSpec.describe OmniAuth::Strategies::Clever do
 
     it 'returns the correct callback url' do
       expect(subject.callback_url).to eq('http://localhost:3000/auth/callback')
+    end
+  end
+
+  describe '#callback_phase' do
+    context 'when there is an error parameter' do
+      it 'fails with the error provided' do
+        allow(strategy.request).to receive(:params).and_return('error' => 'access_denied', 'error_description' => 'User denied your request')
+        expect(strategy).to receive(:fail!).with('access_denied', instance_of(OmniAuth::Strategies::OAuth2::CallbackError))
+        strategy.callback_phase
+      end
+    end
+
+    context 'when CSRF attack is detected' do
+      it 'fails with CSRF detected' do
+        strategy.session['omniauth.state'] = 'state123'
+        allow(strategy.request).to receive(:params).and_return('state' => 'state456')
+        expect(strategy).to receive(:fail!).with(:csrf_detected, instance_of(OmniAuth::Strategies::OAuth2::CallbackError))
+        strategy.callback_phase
+      end
     end
   end
 end
